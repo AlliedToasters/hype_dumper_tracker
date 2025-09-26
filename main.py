@@ -261,11 +261,19 @@ class HyperliquidHypeTracker:
         snapshots.sort(key=lambda x: x.get('timestamp', 0))
         return snapshots
     
-    def plot_balance_history(self, snapshots: List[Dict[str, Any]]):
+    def plot_balance_history(
+            self, 
+            snapshots: List[Dict[str, Any]],
+            use_last_n: int = 256
+        ):
         """Create a dark mode plot of HYPE balance over time with sell pressure metrics"""
         if not snapshots:
             print("No snapshots available for plotting")
             return
+        
+        if use_last_n is not None and use_last_n > 0:
+            snapshots.sort(key=lambda x: x.get('timestamp', 0))
+            snapshots = snapshots[-use_last_n:]
         
         # Set dark style
         plt.style.use('dark_background')
@@ -290,10 +298,11 @@ class HyperliquidHypeTracker:
             print("No valid timestamp data in snapshots")
             return
         
-        # Calculate average sell pressure (USD per day and per hour)
+        # Calculate average sell pressure based on HYPE amounts only
         avg_sell_pressure_daily = None
         avg_sell_pressure_hourly = None
-        hourly_sell_rate = []
+        hourly_sell_rate_hype = []  # Track HYPE sold per hour
+        hourly_sell_rate_usd = []   # Track USD equivalent using current price
         avg_hype_price = None
         
         if len(total_hype) > 1 and len(timestamps) > 1:
@@ -301,7 +310,6 @@ class HyperliquidHypeTracker:
             hype_sold = total_hype[0] - total_hype[-1]
             
             # Calculate average HYPE price over the period
-            # Use the average of all price points where we have both HYPE and USD values
             prices = []
             for i in range(len(total_hype)):
                 if total_hype[i] > 0 and usd_values[i] > 0:
@@ -310,31 +318,39 @@ class HyperliquidHypeTracker:
             if prices:
                 avg_hype_price = sum(prices) / len(prices)
                 
-                # Calculate USD value sold using average price
-                usd_sold = hype_sold * avg_hype_price
-                
                 # Calculate time spans
                 time_span_days = (timestamps[-1] - timestamps[0]).total_seconds() / 86400
                 time_span_hours = (timestamps[-1] - timestamps[0]).total_seconds() / 3600
                 
                 if time_span_hours > 0:
-                    avg_sell_pressure_daily = usd_sold / time_span_days
-                    avg_sell_pressure_hourly = usd_sold / time_span_hours
+                    # Calculate average HYPE sold per hour/day
+                    avg_hype_hourly = hype_sold / time_span_hours
+                    avg_hype_daily = hype_sold / time_span_days
                     
-                    # Calculate rolling hourly sell rate for visualization
+                    # Convert to USD using average price
+                    avg_sell_pressure_hourly = avg_hype_hourly * avg_hype_price
+                    avg_sell_pressure_daily = avg_hype_daily * avg_hype_price
+                    
+                    # Calculate rolling hourly sell rate based on HYPE amounts
                     for i in range(1, len(timestamps)):
-                        hype_change = total_hype[i-1] - total_hype[i]
+                        # HYPE sold (positive when balance decreases)
+                        hype_sold_period = total_hype[i-1] - total_hype[i]
                         time_diff_hours = (timestamps[i] - timestamps[i-1]).total_seconds() / 3600
+                        
                         if time_diff_hours > 0:
-                            # Use point-to-point price for more accurate USD rate
+                            # HYPE sold per hour
+                            hype_rate = hype_sold_period / time_diff_hours
+                            hourly_sell_rate_hype.append(hype_rate)
+                            
+                            # Convert to USD using current price at this point
                             if total_hype[i] > 0:
                                 current_price = usd_values[i] / total_hype[i]
                             else:
                                 current_price = avg_hype_price
-                            hourly_rate_usd = (hype_change * current_price) / time_diff_hours
-                            hourly_sell_rate.append(hourly_rate_usd)
+                            hourly_sell_rate_usd.append(hype_rate * current_price)
                         else:
-                            hourly_sell_rate.append(0)
+                            hourly_sell_rate_hype.append(0)
+                            hourly_sell_rate_usd.append(0)
         
         # Create figure with 3 subplots
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 14), facecolor='#0d1117')
@@ -361,32 +377,40 @@ class HyperliquidHypeTracker:
         ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
         
         # Plot sell pressure (if we have data)
-        if hourly_sell_rate and len(hourly_sell_rate) > 0:
+        if hourly_sell_rate_usd and len(hourly_sell_rate_usd) > 0:
             # Create twin axis for daily scale
             ax3_daily = ax3.twinx()
             
-            # Plot hourly sell rate on primary axis
-            line1 = ax3.plot(timestamps[1:], hourly_sell_rate, color='#f85149', linewidth=1.5, 
+            # Only show positive values (actual selling)
+            hourly_sell_rate_positive = [max(0, rate) for rate in hourly_sell_rate_usd]
+            
+            # Cap at reasonable maximum for visualization
+            hourly_sell_rate_clipped = [min(rate, 1_000_000) for rate in hourly_sell_rate_positive]
+            
+            line1 = ax3.plot(timestamps[1:], hourly_sell_rate_clipped, color='#f85149', linewidth=1.5, 
                             alpha=0.8, label='Hourly Rate')
             
-            # Add average lines
-            if avg_sell_pressure_hourly and avg_sell_pressure_daily:
-                # clip hourly sell pressure to max 1 million
-                avg_sell_pressure_hourly_clipped = min(avg_sell_pressure_hourly, 1_000_000)
-                line2 = ax3.axhline(y=avg_sell_pressure_hourly_clipped, color='#ff6b6b', linestyle='--', 
-                                linewidth=2, label=f'Avg: ${avg_sell_pressure_hourly:,.0f}/hr')
+            # Add average lines (only if positive - indicating net selling)
+            lines = [line1[0]]
+            if avg_sell_pressure_hourly and avg_sell_pressure_hourly > 0:
+                line2 = ax3.axhline(y=min(avg_sell_pressure_hourly, 1_000_000), color='#ff6b6b', linestyle='--', 
+                                    linewidth=2, label=f'Avg: ${min(avg_sell_pressure_hourly, 1_000_000):,.0f}/hr')
+                lines.append(line2)
                 
-                # Show daily average on right axis
-                daily_equiv = [rate * 24 for rate in hourly_sell_rate]
-                line3 = ax3_daily.axhline(y=avg_sell_pressure_daily, color='#ffa500', linestyle='--', 
-                                        linewidth=2, label=f'Avg: ${avg_sell_pressure_daily:,.0f}/day')
+                if avg_sell_pressure_daily and avg_sell_pressure_daily > 0:
+                    line3 = ax3_daily.axhline(y=avg_sell_pressure_daily, color='#ffa500', linestyle='--', 
+                                            linewidth=2, label=f'Avg: ${avg_sell_pressure_daily:,.0f}/day')
+                    lines.append(line3)
             
             # Labels and formatting
             ax3.set_xlabel('Date/Time', fontsize=12, color='white')
             ax3.set_ylabel('USD/Hour', fontsize=12, color='#ff6b6b')
             ax3_daily.set_ylabel('USD/Day', fontsize=12, color='#ffa500')
             
-            sell_pressure_title = f'Sell Pressure: ${avg_sell_pressure_hourly:,.0f}/hr (${avg_sell_pressure_daily:,.0f}/day)'
+            if avg_sell_pressure_hourly and avg_sell_pressure_hourly > 0:
+                sell_pressure_title = f'Sell Pressure: ${avg_sell_pressure_hourly:,.0f}/hr (${avg_sell_pressure_daily:,.0f}/day)'
+            else:
+                sell_pressure_title = 'Sell Pressure (Net Buying Detected)'
             ax3.set_title(sell_pressure_title, fontsize=16, color='white', pad=20, fontweight='bold')
             
             ax3.grid(True, alpha=0.2, color='#30363d')
@@ -400,7 +424,6 @@ class HyperliquidHypeTracker:
             ax3_daily.tick_params(axis='y', labelcolor='#ffa500')
             
             # Combine legends
-            lines = line1 + [line2, line3]
             labels = [l.get_label() for l in lines]
             ax3.legend(lines, labels, loc='upper right', framealpha=0.9, 
                     facecolor='#161b22', labelcolor='white')
@@ -433,7 +456,7 @@ class HyperliquidHypeTracker:
             # Make tick marks white
             ax.tick_params(colors='white')
         
-        # Add current values and sell pressure as text
+        # Add current values as text
         if len(snapshots) > 0:
             latest = snapshots[-1]
             title_text = f"Remaining: {latest.get('total_hype', 0):,.2f} HYPE (${latest.get('total_usd_value', 0):,.2f})"
@@ -448,11 +471,11 @@ class HyperliquidHypeTracker:
         print(f"Plot saved to '{plot_filename}'")
         
         # Print sell pressure summary
-        if avg_sell_pressure_hourly and avg_sell_pressure_daily:
+        if avg_sell_pressure_hourly and avg_sell_pressure_daily and avg_sell_pressure_hourly > 0:
             print(f"\nSell Pressure Analysis:")
             print(f"  Average HYPE price: ${avg_hype_price:.2f}")
             print(f"  Total HYPE sold: {hype_sold:,.2f} HYPE")
-            print(f"  Total USD value sold (at avg price): ${usd_sold:,.2f}")
+            print(f"  Average hourly HYPE sold: {avg_hype_hourly:,.2f} HYPE")
             print(f"  Average hourly sell pressure: ${avg_sell_pressure_hourly:,.2f}")
             print(f"  Average daily sell pressure: ${avg_sell_pressure_daily:,.2f}")
             print(f"  Time period: {time_span_days:.1f} days ({time_span_hours:.1f} hours)")
@@ -460,6 +483,10 @@ class HyperliquidHypeTracker:
                 hours_until_depleted = usd_values[-1] / avg_sell_pressure_hourly
                 days_until_depleted = hours_until_depleted / 24
                 print(f"  Estimated time until depleted: {hours_until_depleted:.1f} hours ({days_until_depleted:.1f} days)")
+        elif avg_sell_pressure_hourly and avg_sell_pressure_hourly < 0:
+            print(f"\nNet Buying Detected:")
+            print(f"  Holdings have increased over the monitoring period")
+            print(f"  Net HYPE acquired: {abs(hype_sold):,.2f} HYPE")
         
         plt.show()
     
