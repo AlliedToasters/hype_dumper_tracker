@@ -3,6 +3,7 @@ Run with python:
 
 ```bash
 pip3 install seaborn requests
+mkdir old_pngs
 python main.py
 ```
 
