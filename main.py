@@ -131,13 +131,10 @@ class HyperliquidHypeTracker:
         staked_balance = 0.0
         if include_staking:
             staked_balance = self.get_total_staked_hype(address)
-
-            spot_balance += 77089.23 # temporary hack to add in the balance that is currently in unstaking queue
-            # TODO: delete this line once unstaking queue is visible in API
         
         return address, spot_balance, staked_balance
     
-    def get_all_holdings(self, addresses: List[str], staked_addresses: List[str] = None, max_workers: int = 8) -> Dict[str, Any]:
+    def get_all_holdings(self, addresses: List[str], staked_addresses: List[str] = None, max_workers: int = 1) -> Dict[str, Any]:
         """Get HYPE holdings for all addresses using concurrent requests
         
         Args:
@@ -556,13 +553,19 @@ class HyperliquidHypeTracker:
                 print(f"Percentage staked: {staking_percentage:.1f}%")
         print("="*80)
 
-def main():
+def main(
+        wallets_json_path: str = "data/clean_unstakers.json",
+        incl_staking: bool = True,
+        max_concurrent_requests: int = 1
+    ):
     # List of wallet addresses
-    with open("data/binance_dumper.json", "r") as f:
+    with open(wallets_json_path, "r") as f:
         addresses = json.load(f) 
     
     # Addresses that have staked balances - add the ones you know have staking
     staked_addresses = []
+    if incl_staking:
+        staked_addresses = addresses  # include all, for use with unstaking queue tracker
 
     tracker = HyperliquidHypeTracker()
     
@@ -570,7 +573,7 @@ def main():
     start_time = time.time()
     
     # Get current holdings
-    results = tracker.get_all_holdings(addresses, staked_addresses, max_workers=8)
+    results = tracker.get_all_holdings(addresses, staked_addresses, max_workers=max_concurrent_requests)
     
     end_time = time.time()
     
