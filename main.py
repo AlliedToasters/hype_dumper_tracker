@@ -22,6 +22,171 @@ class HyperliquidHypeTracker:
         # Create snapshots directory if it doesn't exist
         if not os.path.exists(self.snapshots_dir):
             os.makedirs(self.snapshots_dir)
+
+    def get_single_address_balance(self, address: str, include_staking: bool = False) -> tuple:
+        """Get spot and staking balances for a single address
+        
+        Args:
+            address: Wallet address to check
+            include_staking: Whether to fetch staking data (delegated + undelegated + pending)
+        
+        Returns:
+            Tuple of (address, spot_balance, staked_balance, undelegated_balance, pending_withdrawal)
+        """
+        # Get spot balance using existing method
+        spot_balance = 0.0
+        try:
+            balance_data = self.get_spot_balances(address)
+            spot_balance = self.extract_hype_balance(balance_data)
+        except Exception as e:
+            print(f"Error fetching spot balance for {address}: {e}")
+        
+        staked_balance = 0.0
+        undelegated_balance = 0.0
+        pending_withdrawal = 0.0
+        
+        if include_staking:
+            try:
+                # Get comprehensive staking summary using existing method
+                staking_summary = self.get_staking_summary(address)
+                
+                if staking_summary:
+                    # "delegated" = actively staked with validators
+                    staked_balance = float(staking_summary.get("delegated", 0))
+                    
+                    # "undelegated" = in staking balance but not allocated to validators
+                    undelegated_balance = float(staking_summary.get("undelegated", 0))
+                    
+                    # "totalPendingWithdrawal" = sum of all pending withdrawals (7 day lockup)
+                    pending_withdrawal = float(staking_summary.get("totalPendingWithdrawal", 0))
+                    
+            except Exception as e:
+                print(f"Error fetching staking data for {address}: {e}")
+        
+        return (address, spot_balance, staked_balance, undelegated_balance, pending_withdrawal)
+
+
+    def get_all_holdings(self, addresses: List[str], staked_addresses: List[str] = None, 
+                        delay_seconds: float = 1.0, max_retries: int = 3) -> Dict[str, Any]:
+        """Get HYPE holdings for all addresses with throttling and retry logic
+        
+        Args:
+            addresses: List of wallet addresses to check
+            staked_addresses: List of addresses that have staked balances to include
+            delay_seconds: Delay between requests to avoid rate limiting
+            max_retries: Maximum number of retry attempts per address
+        """
+        if staked_addresses is None:
+            staked_addresses = []
+        
+        print("Fetching all mid prices...")
+        all_mids = self.get_all_prices()
+        
+        # Extract HYPE price - could be under "HYPE" or "@107"
+        hype_price = 0.0
+        for key in ["HYPE", "@107"]:
+            if key in all_mids:
+                try:
+                    hype_price = float(all_mids[key])
+                    print(f"Found HYPE price under key '{key}': ${hype_price:.4f}")
+                    break
+                except (ValueError, TypeError):
+                    continue
+        print(f"Found PURR price: ${all_mids['PURR']}")
+        
+        if hype_price == 0:
+            print("Warning: Could not fetch HYPE price from allMids")
+        
+        print(f"\nFetching holdings for {len(addresses)} addresses sequentially (delay: {delay_seconds}s)...")
+        if staked_addresses:
+            print(f"Including staking data for {len(staked_addresses)} addresses: {', '.join([addr[:10] + '...' for addr in staked_addresses])}")
+        
+        results = {
+            "hype_price": hype_price,
+            "addresses": {},
+            "total_spot_hype": 0.0,
+            "total_staked_hype": 0.0,
+            "total_undelegated_hype": 0.0,
+            "total_pending_withdrawal": 0.0,
+            "total_hype": 0.0,
+            "total_usd_value": 0.0
+        }
+        
+        # Process addresses sequentially with throttling
+        for idx, addr in enumerate(addresses, 1):
+            include_staking = addr in staked_addresses
+            
+            # Retry logic
+            for attempt in range(max_retries):
+                try:
+                    address, spot_balance, staked_balance, undelegated_balance, pending_withdrawal = \
+                        self.get_single_address_balance(addr, include_staking)
+                    
+                    # Total balance includes everything: spot + staked + undelegated + pending
+                    total_balance = spot_balance + staked_balance + undelegated_balance + pending_withdrawal
+                    usd_value = total_balance * hype_price
+                    
+                    results["addresses"][address] = {
+                        "spot_balance": spot_balance,
+                        "staked_balance": staked_balance,
+                        "undelegated_balance": undelegated_balance,
+                        "pending_withdrawal": pending_withdrawal,
+                        "total_balance": total_balance,
+                        "usd_value": usd_value
+                    }
+                    
+                    results["total_spot_hype"] += spot_balance
+                    results["total_staked_hype"] += staked_balance
+                    results["total_undelegated_hype"] += undelegated_balance
+                    results["total_pending_withdrawal"] += pending_withdrawal
+                    results["total_hype"] += total_balance
+                    results["total_usd_value"] += usd_value
+                    
+                    # Print progress with all balance types
+                    if include_staking:
+                        status_parts = [f"Spot: {spot_balance:,.2f}"]
+                        if staked_balance > 0:
+                            status_parts.append(f"Staked: {staked_balance:,.2f}")
+                        if undelegated_balance > 0:
+                            status_parts.append(f"Undelegated: {undelegated_balance:,.2f}")
+                        if pending_withdrawal > 0:
+                            status_parts.append(f"Pending: {pending_withdrawal:,.2f}")
+                        print(f"Completed {idx}/{len(addresses)}: {address[:10]}... - {', '.join(status_parts)} HYPE")
+                    else:
+                        print(f"Completed {idx}/{len(addresses)}: {address[:10]}... - {spot_balance:,.2f} HYPE")
+                    
+                    # Success - break retry loop
+                    break
+                    
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = delay_seconds * (attempt + 2)  # Exponential backoff
+                        print(f"Error processing {addr[:10]}... (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"Error processing {addr[:10]}... after {max_retries} attempts: {e}")
+                        results["addresses"][addr] = {
+                            "spot_balance": 0.0,
+                            "staked_balance": 0.0,
+                            "undelegated_balance": 0.0,
+                            "pending_withdrawal": 0.0,
+                            "total_balance": 0.0,
+                            "usd_value": 0.0
+                        }
+            
+            # Throttle between requests (skip delay after last address)
+            if idx < len(addresses):
+                time.sleep(delay_seconds)
+        
+        # Recalculate totals to ensure accuracy
+        results["total_spot_hype"] = sum(data["spot_balance"] for data in results["addresses"].values())
+        results["total_staked_hype"] = sum(data["staked_balance"] for data in results["addresses"].values())
+        results["total_undelegated_hype"] = sum(data["undelegated_balance"] for data in results["addresses"].values())
+        results["total_pending_withdrawal"] = sum(data["pending_withdrawal"] for data in results["addresses"].values())
+        results["total_hype"] = sum(data["total_balance"] for data in results["addresses"].values())
+        results["total_usd_value"] = sum(data["usd_value"] for data in results["addresses"].values())
+
+        return results
         
     def get_all_prices(self) -> Dict[str, str]:
         """Get all mid prices including HYPE using allMids endpoint"""
@@ -119,119 +284,6 @@ class HyperliquidHypeTracker:
                 pass
         
         return total_staked
-    
-    def get_single_address_balance(self, address: str, include_staking: bool = False) -> tuple[str, float, float]:
-        """Get HYPE balance for a single address - thread-safe function
-        Returns: (address, spot_balance, staked_balance)"""
-        # Get spot balance
-        balance_data = self.get_spot_balances(address)
-        spot_balance = self.extract_hype_balance(balance_data)
-        
-        # Get staking balance if requested
-        staked_balance = 0.0
-        if include_staking:
-            staked_balance = self.get_total_staked_hype(address)
-        
-        return address, spot_balance, staked_balance
-    
-    def get_all_holdings(self, addresses: List[str], staked_addresses: List[str] = None, max_workers: int = 1) -> Dict[str, Any]:
-        """Get HYPE holdings for all addresses using concurrent requests
-        
-        Args:
-            addresses: List of wallet addresses to check
-            staked_addresses: List of addresses that have staked balances to include
-            max_workers: Number of concurrent threads for API requests
-        """
-        if staked_addresses is None:
-            staked_addresses = []
-        
-        print("Fetching all mid prices...")
-        all_mids = self.get_all_prices()
-        
-        # Extract HYPE price - could be under "HYPE" or "@107"
-        hype_price = 0.0
-        for key in ["HYPE", "@107"]:
-            if key in all_mids:
-                try:
-                    hype_price = float(all_mids[key])
-                    print(f"Found HYPE price under key '{key}': ${hype_price:.4f}")
-                    break
-                except (ValueError, TypeError):
-                    continue
-        print(f"Found PURR price: ${all_mids["PURR"]}")
-        
-        if hype_price == 0:
-            print("Warning: Could not fetch HYPE price from allMids")
-        
-        print(f"\nFetching holdings for {len(addresses)} addresses using {max_workers} concurrent requests...")
-        if staked_addresses:
-            print(f"Including staking data for {len(staked_addresses)} addresses: {', '.join([addr[:10] + '...' for addr in staked_addresses])}")
-        
-        results = {
-            "hype_price": hype_price,
-            "addresses": {},
-            "total_spot_hype": 0.0,
-            "total_staked_hype": 0.0,
-            "total_hype": 0.0,
-            "total_usd_value": 0.0
-        }
-        
-        # Use ThreadPoolExecutor for concurrent requests
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all requests
-            future_to_address = {}
-            for addr in addresses:
-                include_staking = addr in staked_addresses
-                future = executor.submit(self.get_single_address_balance, addr, include_staking)
-                future_to_address[future] = addr
-            
-            # Process completed requests
-            completed = 0
-            for future in concurrent.futures.as_completed(future_to_address):
-                try:
-                    address, spot_balance, staked_balance = future.result()
-                    completed += 1
-                    
-                    total_balance = spot_balance + staked_balance
-                    usd_value = total_balance * hype_price
-                    
-                    results["addresses"][address] = {
-                        "spot_balance": spot_balance,
-                        "staked_balance": staked_balance,
-                        "total_balance": total_balance,
-                        "usd_value": usd_value
-                    }
-                    
-                    results["total_spot_hype"] += spot_balance
-                    results["total_staked_hype"] += staked_balance
-                    results["total_hype"] += total_balance
-                    results["total_usd_value"] += usd_value
-                    
-                    # Print progress
-                    if staked_balance > 0:
-                        print(f"Completed {completed}/{len(addresses)}: {address[:10]}... - Spot: {spot_balance:,.2f}, Staked: {staked_balance:,.2f} HYPE")
-                    else:
-                        print(f"Completed {completed}/{len(addresses)}: {address[:10]}... - {spot_balance:,.2f} HYPE")
-                    
-                except Exception as e:
-                    address = future_to_address[future]
-                    print(f"Error processing {address}: {e}")
-                    results["addresses"][address] = {
-                        "spot_balance": 0.0,
-                        "staked_balance": 0.0,
-                        "total_balance": 0.0,
-                        "usd_value": 0.0
-                    }
-        
-        # re-calculate total_spot_hype  total_balance and total_usd_value to ensure accuracy after
-        # re-calculate total_spot_hype  total_balance and total_usd_value to ensure accuracy after
-        # concurrent updates
-        results["total_spot_hype"] = sum(data["spot_balance"] for data in results["addresses"].values())
-        results["total_staked_hype"] = sum(data["staked_balance"] for data in results["addresses"].values())
-        results["total_hype"] = sum(data["total_balance"] for data in results["addresses"].values())
-        results["total_usd_value"] = sum(data["usd_value"] for data in results["addresses"].values())
-
-        return results
     
     def save_snapshot(self, results: Dict[str, Any]) -> str:
         """Save snapshot with timestamp in filename"""
@@ -555,12 +607,14 @@ class HyperliquidHypeTracker:
 
 def main(
         wallets_json_path: str = "data/clean_unstakers.json",
-        incl_staking: bool = True,
-        max_concurrent_requests: int = 1
+        incl_staking: bool = True
     ):
     # List of wallet addresses
     with open(wallets_json_path, "r") as f:
         addresses = json.load(f) 
+
+    # de-dupe
+    addresses = list(set(addresses))
     
     # Addresses that have staked balances - add the ones you know have staking
     staked_addresses = []
@@ -573,11 +627,11 @@ def main(
     start_time = time.time()
     
     # Get current holdings
-    results = tracker.get_all_holdings(addresses, staked_addresses, max_workers=max_concurrent_requests)
+    results = tracker.get_all_holdings(addresses, staked_addresses)
     
     end_time = time.time()
     
-    # Add timestamp and execution time
+    # Add timestamp and execution timex``
     results['execution_time'] = end_time - start_time
     results['timestamp'] = int(time.time())
     
