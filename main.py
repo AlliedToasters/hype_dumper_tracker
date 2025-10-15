@@ -131,6 +131,9 @@ class HyperliquidHypeTracker:
         staked_balance = 0.0
         if include_staking:
             staked_balance = self.get_total_staked_hype(address)
+
+            spot_balance += 77089.23 # temporary hack to add in the balance that is currently in unstaking queue
+            # TODO: delete this line once unstaking queue is visible in API
         
         return address, spot_balance, staked_balance
     
@@ -158,6 +161,7 @@ class HyperliquidHypeTracker:
                     break
                 except (ValueError, TypeError):
                     continue
+        print(f"Found PURR price: ${all_mids["PURR"]}")
         
         if hype_price == 0:
             print("Warning: Could not fetch HYPE price from allMids")
@@ -264,7 +268,7 @@ class HyperliquidHypeTracker:
     def plot_balance_history(
             self, 
             snapshots: List[Dict[str, Any]],
-            use_last_n: int = 256
+            use_last_n: int = 100
         ):
         """Create a dark mode plot of HYPE balance over time with sell pressure metrics"""
         if not snapshots:
@@ -554,31 +558,11 @@ class HyperliquidHypeTracker:
 
 def main():
     # List of wallet addresses
-    addresses = [
-        '0xaf8f94f3aa5df58962443fd2d0ad7546eb7b668e',
-        '0x00acc48c54119eb92f604498b30953866488d560',
-        # '0x24ca22a893dd37a6d0d7c7992fc6d1ea59395647',
-        '0x2918f0e47488ea0e93751cd1d3ea26245eba8e3b',
-        '0xe3f41398c4b12305230930117d24a68a2c140369',
-        # '0x52c701dfda9f7f0e9a24a98177675ef4bdb4734d',
-        '0xd5f57d7c7836498e6d014b19b5e49abf8f5d7eb6',
-        '0x2850dcf283ea365a165b5f9f507f4bebf961cd35',
-        '0xe4ed087e05aeae55c1013f273192714579e64b4b',
-        '0xfec66777ed732a87bef60d459d4ef409db3719d7',
-        '0x9f457b3409b53d10fbc318206f23321136373b33',  # This address has staking
-        '0xf7499146d59698d7942d179cfa46d653c164c8c5',
-        '0x8714b8b9ba94beb8e094ceddf5e8403f758bbbb9',
-        '0xe6fca769a603288ca818a3d64e655e02850164d0',
-        '0xebfa02f287c998b2527a2fde006558a4166b965d',
-        '0x2e1abdd71f1fcbf3a89cd2e2a494b09884788108',
-        '0x6afdf29ed6b63769d8433a95da68150868a7e523',
-        '0x2e1abdd71f1fcbf3a89cd2e2a494b09884788108'
-    ]
+    with open("data/binance_dumper.json", "r") as f:
+        addresses = json.load(f) 
     
     # Addresses that have staked balances - add the ones you know have staking
-    staked_addresses = [
-        "0x9f457b3409b53d10fbc318206f23321136373b33"
-    ]
+    staked_addresses = []
 
     tracker = HyperliquidHypeTracker()
     
@@ -617,7 +601,7 @@ def main():
     print("Current results also saved to 'hype_holdings_results.json'")
 
 if __name__ == "__main__":
-    frequency = 60 * 0.5  # Run every 5 minutes
+    frequency = 60 * 10  # Run every 5 minutes
     while True:
         main()
         print(f"\nWaiting {frequency/60:.1f} minutes until next run...\n")
