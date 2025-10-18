@@ -13,6 +13,8 @@ from matplotlib.dates import DateFormatter
 import seaborn as sns
 import pandas as pd
 
+loracle = "0xfae95f601f3a25ace60d19dbb929f2a5c57e3571"
+
 class HyperliquidHypeTracker:
     def __init__(self):
         self.base_url = "https://api.hyperliquid.xyz/info"
@@ -123,7 +125,8 @@ class HyperliquidHypeTracker:
                         self.get_single_address_balance(addr, include_staking)
                     
                     # Total balance includes everything: spot + staked + undelegated + pending
-                    total_balance = spot_balance + staked_balance + undelegated_balance + pending_withdrawal
+                    # total_balance = spot_balance + staked_balance + undelegated_balance + pending_withdrawal
+                    total_balance = spot_balance + pending_withdrawal
                     usd_value = total_balance * hype_price
                     
                     results["addresses"][address] = {
@@ -151,9 +154,12 @@ class HyperliquidHypeTracker:
                             status_parts.append(f"Undelegated: {undelegated_balance:,.2f}")
                         if pending_withdrawal > 0:
                             status_parts.append(f"Pending: {pending_withdrawal:,.2f}")
-                        print(f"Completed {idx}/{len(addresses)}: {address[:10]}... - {', '.join(status_parts)} HYPE")
+                        short_addr = addr[:10]
+                        if addr == loracle:
+                            short_addr = "loracle"
+                        print(f"Completed {idx}/{len(addresses)}: {short_addr}... - {', '.join(status_parts)} HYPE")
                     else:
-                        print(f"Completed {idx}/{len(addresses)}: {address[:10]}... - {spot_balance:,.2f} HYPE")
+                        print(f"Completed {idx}/{len(addresses)}: {short_addr}... - {spot_balance:,.2f} HYPE")
                     
                     # Success - break retry loop
                     break
@@ -438,7 +444,7 @@ class HyperliquidHypeTracker:
             hourly_sell_rate_positive = [max(0, rate) for rate in hourly_sell_rate_usd]
             
             # Cap at reasonable maximum for visualization
-            hourly_sell_rate_clipped = [min(rate, 1_000_000) for rate in hourly_sell_rate_positive]
+            hourly_sell_rate_clipped = [min(rate, 33_000_000) for rate in hourly_sell_rate_positive]
             
             line1 = ax3.plot(timestamps[1:], hourly_sell_rate_clipped, color='#f85149', linewidth=1.5, 
                             alpha=0.8, label='Hourly Rate')
@@ -446,8 +452,8 @@ class HyperliquidHypeTracker:
             # Add average lines (only if positive - indicating net selling)
             lines = [line1[0]]
             if avg_sell_pressure_hourly and avg_sell_pressure_hourly > 0:
-                line2 = ax3.axhline(y=min(avg_sell_pressure_hourly, 1_000_000), color='#ff6b6b', linestyle='--', 
-                                    linewidth=2, label=f'Avg: ${min(avg_sell_pressure_hourly, 1_000_000):,.0f}/hr')
+                line2 = ax3.axhline(y=min(avg_sell_pressure_hourly, 33_000_000), color='#ff6b6b', linestyle='--', 
+                                    linewidth=2, label=f'Avg: ${min(avg_sell_pressure_hourly, 33_000_000):,.0f}/hr')
                 lines.append(line2)
                 
                 if avg_sell_pressure_daily and avg_sell_pressure_daily > 0:
@@ -606,7 +612,7 @@ class HyperliquidHypeTracker:
         print("="*80)
 
 def main(
-        wallets_json_path: str = "data/clean_unstakers.json",
+        wallets_json_path: str = "data/all_unstakers.json",
         incl_staking: bool = True
     ):
     # List of wallet addresses
