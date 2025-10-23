@@ -14,6 +14,12 @@ import seaborn as sns
 import pandas as pd
 
 loracle = "0xfae95f601f3a25ace60d19dbb929f2a5c57e3571"
+kinetiq_wallets = [
+    "0xfdd35c5179e8594e237031dd945e0584af29572b",
+    "0x393d0b87ed38fc779fd9611144ae649ba6082109"
+]
+exclude_kinetiq_wallets: bool = True
+exclude_loracle: bool = True
 
 class HyperliquidHypeTracker:
     def __init__(self):
@@ -618,6 +624,12 @@ def main(
     # List of wallet addresses
     with open(wallets_json_path, "r") as f:
         addresses = json.load(f) 
+
+    if exclude_kinetiq_wallets:
+        addresses = [addr for addr in addresses if addr.lower() not in kinetiq_wallets]
+
+    if exclude_loracle:
+        addresses = [addr for addr in addresses if addr.lower() != loracle.lower()]
 
     # de-dupe
     addresses = list(set(addresses))
